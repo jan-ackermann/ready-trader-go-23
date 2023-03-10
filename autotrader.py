@@ -17,10 +17,13 @@
 #     <https://www.gnu.org/licenses/>.
 import asyncio
 import itertools
+from math import floor
 
-from typing import List
+from typing import List, Dict
 
 from ready_trader_go import BaseAutoTrader, Instrument, Lifespan, MAXIMUM_ASK, MINIMUM_BID, Side
+
+import numpy as np
 
 
 LOT_SIZE = 10
@@ -33,6 +36,118 @@ FUT = Instrument.FUTURE
 ETF = Instrument.ETF
 TAKER_FEE = 0.0002
 MAKER_FEE = -0.0001
+
+SUBTRADERS = ['MM', 'ARB']
+
+
+class Order:
+    def __init__(self, order_id: int, instrument: Instrument, price: int, volume: int, side: Side, subtrader: str):
+        self.id = order_id
+        self.instrument = instrument
+        self.price = price
+        self.volume = volume
+        self.side = side
+        self.subtrader = subtrader
+
+
+class DataStore:
+    def __init__(self, auto_trader):
+        self.auto_trader = auto_trader
+        self.sequence_numbers = {'order_book': 0, 'trade_ticks': 0}
+
+        # Position array (Instrument x Subtrader)
+        self.positions = np.ndarray(shape=(2, 2), dtype=int)
+        # Active orders
+        self.active_orders: Dict[int, Order] = dict()
+        self.order_books: Dict[Instrument, List[np.ndarray]] = dict()
+
+    def get_position(self, instrument: Instrument, subtrader: str = 'ALL'):
+        if subtrader == 'ALL':
+            return self.positions[instrument, :].sum()
+
+        try:
+            subtrader_index = SUBTRADERS.index(subtrader)
+            return self.positions[instrument, subtrader_index]
+        except ValueError as e:
+            self.auto_trader.logger.warning(f"Tried to retrieve position from DataStore for"
+                                            f"invalid subtrader {subtrader}!")
+            return 0
+
+    def get_order_book(self, instrument: Instrument, include_own: bool):
+        book = self.order_books[instrument]
+        if include_own:
+            return book
+        else:
+            # Very strict for now. Does not subtract own order volume from order book, but removes orders at the same
+            # price as ones we have placed for this instrument
+            # TODO match with active orders
+            return None
+
+    def integrate_new_order_book(self, instrument: Instrument, order_book):
+        seq = self.sequence_numbers['order_book']
+        if order_book['seq'] < seq:
+            # Discard order book, because an order book for an instrument with a higher sequence number was previously
+            # received
+            return f"Received out-of-order order book update message with sequence number {order_book['seq']} for" \
+                   f"instrument {instrument}, but expected a sequence number of {seq} or above!"
+
+        # Accept order book as in sequence or ahead of sequence (fast-forward then)
+        self.sequence_numbers['order_book'] = seq
+
+        # Trim invalid orders
+        bid_prices, bid_volumes = np.array(order_book['bid_prices']), np.array(order_book['bid_volumes'])
+        ask_prices, ask_volumes = np.array(order_book['ask_prices']), np.array(order_book['ask_volumes'])
+        mask = bid_prices != 0
+        bid_prices, bid_volumes = bid_prices[mask], bid_volumes[mask]
+        mask = ask_prices != 0
+        ask_prices, ask_volumes = ask_prices[mask], ask_volumes[mask]
+        self.order_books[instrument] = [bid_prices.copy(), bid_volumes.copy(), ask_prices.copy(), ask_volumes.copy()]
+
+
+class ComplianceLayer:
+    def __init__(self, auto_trader):
+        self.auto_trader = auto_trader
+        self.data = self.auto_trader.data_store
+        self.position_allowances = dict()
+
+    def init_allowances(self):
+        ratio_allowances = dict()
+        ratio_allowances['MM'] = 0.4
+        ratio_allowances['ARB'] = 0.6
+
+        # Turn these ratios into (integer) lots
+        self.position_allowances = {subtrader_name: int(floor(ratio * POSITION_LIMIT)) for subtrader_name, ratio in ratio_allowances}
+
+    def ensure_legal(self):
+        # Check current overall position within bounds
+        if not(-POSITION_LIMIT <= self.data.get_position(ETF) <= POSITION_LIMIT):
+            self.panic()
+        if not (-POSITION_LIMIT <= self.data.get_position(FUT) <= POSITION_LIMIT):
+            self.panic()
+
+        # Check current position within bounds for subtraders
+        for subtrader_name in SUBTRADERS:
+            allowance = self.position_allowances[subtrader_name]
+            if not(-allowance <= self.data.get_position(ETF, subtrader_name) <= allowance):
+                self.panic()
+            if not(-allowance <= self.data.get_position(FUT, subtrader_name) <= allowance):
+                self.panic()
+
+        # Check that no combination of trade executions can exceed the overall position limits
+        # ...
+
+        # Check that no combination of trade executions can exceed the subtrader position allowance
+        # ...
+
+    def panic(self):
+        # Try to recover
+        # Goals
+        # 1. Within position limits even if worst case order fill in next tick
+        # 2. Delta neutral
+        # 3. Reset subtraders sensibly and functionally
+        # 4. Avoid cycling violations, e.g. random exponential restart...
+        # 5. Minimize downtime
+        pass
 
 
 class AutoTrader(BaseAutoTrader):
@@ -56,6 +171,11 @@ class AutoTrader(BaseAutoTrader):
         self.ask_id = self.ask_price = self.bid_id = self.bid_price = self.position = 0
         self.future_mid_price = 0
         self.order_books = dict()
+
+        self.orders_by_instrument = dict()
+
+        self.data_store = DataStore(self)
+        self.compliance_layer = ComplianceLayer(self)
 
     def on_error_message(self, client_order_id: int, error_message: bytes) -> None:
         """Called when the exchange detects an error.
@@ -112,7 +232,7 @@ class AutoTrader(BaseAutoTrader):
                 self.send_insert_order(order_id, Side.BUY, ETF_asks[0], size, Lifespan.FILL_AND_KILL)
                 self.arb_bids.add(order_id)
 
-    def on_order_book_update_message(self, instrument: int, sequence_number: int, ask_prices: List[int],
+    def on_order_book_update_message(self, instrument: Instrument, sequence_number: int, ask_prices: List[int],
                                      ask_volumes: List[int], bid_prices: List[int], bid_volumes: List[int]) -> None:
         """Called periodically to report the status of an order book.
 
@@ -124,8 +244,15 @@ class AutoTrader(BaseAutoTrader):
         self.logger.info("received order book for instrument %d with sequence number %d", instrument,
                          sequence_number)
 
-        self.order_books[instrument] = {'seq': sequence_number, 'ask_prices': ask_prices, 'ask_volumes': ask_volumes,
-                                        'bid_prices': bid_prices, 'bid_volumes': bid_volumes}
+        book = {'seq': sequence_number, 'bid_prices': bid_prices, 'bid_volumes': bid_volumes,
+                                        'ask_prices': ask_prices, 'ask_volumes': ask_volumes}
+        self.order_books[instrument] = book
+
+        err_msg = self.data_store.integrate_new_order_book(instrument, book)
+        if err_msg is not None:
+            self.logger.warn(err_msg)
+
+
         self.find_arbitrage(sequence_number)
 
         if instrument == Instrument.FUTURE:
@@ -163,13 +290,15 @@ class AutoTrader(BaseAutoTrader):
             if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
                 self.bid_id = next(self.order_ids)
                 self.bid_price = new_bid_price
-                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
+                bid_size = max(0, min(LOT_SIZE, POSITION_LIMIT - self.position))
+                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, bid_size, Lifespan.GOOD_FOR_DAY)
                 self.bids.add(self.bid_id)
 
             if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
                 self.ask_id = next(self.order_ids)
                 self.ask_price = new_ask_price
-                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
+                ask_size = max(0, min(LOT_SIZE, POSITION_LIMIT + self.position))
+                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, ask_size, Lifespan.GOOD_FOR_DAY)
                 self.asks.add(self.ask_id)
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
@@ -185,7 +314,7 @@ class AutoTrader(BaseAutoTrader):
         buy_set = self.bids | self.arb_bids
         sell_set = self.asks | self.arb_asks
 
-        if self.future_mid_price != 0 and client_order_id > 10:
+        if self.future_mid_price != 0 and False:  # client_order_id > 10:
             self.logger.info(f"hedging with future at mid price of {self.future_mid_price}")
             if client_order_id in buy_set:
                 self.position += volume
