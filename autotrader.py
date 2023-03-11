@@ -39,6 +39,8 @@ MAKER_FEE = -0.0001
 
 SUBTRADERS = ['MM', 'ARB']
 
+ENABLE_ARBITRAGE = False
+
 
 class Order:
     def __init__(self, order_id: int, instrument: Instrument, price: int, volume: int, side: Side, subtrader: str):
@@ -56,7 +58,7 @@ class DataStore:
         self.sequence_numbers = {'order_book': 0, 'trade_ticks': 0}
 
         # Position array (Instrument x Subtrader)
-        self.positions = np.ndarray(shape=(2, 2), dtype=int)
+        self.positions = np.zeros(shape=(2, 2), dtype=int)
         # Active orders
         self.active_orders: Dict[int, Order] = dict()
         self.order_books: Dict[Instrument, List[np.ndarray]] = dict()
@@ -118,13 +120,15 @@ class ComplianceLayer:
         self.position_allowances = dict()
         self.order_ids = itertools.count(1)
 
+        self.init_allowances()
+
     def init_allowances(self):
         ratio_allowances = dict()
         ratio_allowances['MM'] = 0.4
         ratio_allowances['ARB'] = 0.6
 
         # Turn these ratios into (integer) lots
-        self.position_allowances = {subtrader_name: int(floor(ratio * POSITION_LIMIT)) for subtrader_name, ratio in ratio_allowances}
+        self.position_allowances = {subtrader_name: int(floor(ratio * POSITION_LIMIT)) for subtrader_name, ratio in ratio_allowances.items()}
 
     def is_state_legal(self) -> bool:
         # Check current overall position within bounds
@@ -256,14 +260,14 @@ class AutoTrader(BaseAutoTrader):
         diff = ETF_bids[0] - FUT_asks[0]
         if diff > 0 and diff > (ETF_bids[0] * TAKER_FEE):
             if ETF_bids[0] not in self.bids:
-                order_id = next(self.order_ids)
                 size = min(self.order_books[ETF]['bid_volumes'][0], self.order_books[FUT]['ask_volumes'][0])
                 max_allowed = POSITION_LIMIT - LOT_SIZE + self.position
                 position_target = int(round(((POSITION_LIMIT - LOT_SIZE) / 3.0) * diff))
                 size = max(0, min(max_allowed, size, position_target + self.position))
-                self.logger.info(f"Trading ETF>FUT crossed market by selling {size}@{ETF_bids[0]}, expecting {diff} with {ETF_bids[0] * TAKER_FEE} in fees")
-                self.send_insert_order(order_id, Side.SELL, ETF_bids[0], size, Lifespan.FILL_AND_KILL)
-                self.arb_asks.add(order_id)
+                if size > 0:
+                    self.logger.info(f"Trading ETF>FUT crossed market by selling {size}@{ETF_bids[0]}, expecting {diff} with {ETF_bids[0] * TAKER_FEE} in fees")
+                    order_id = self.compliance_layer.place_order(ETF, Side.SELL, ETF_bids[0], size, Lifespan.FILL_AND_KILL, 'ARB')
+                    self.arb_asks.add(order_id)
 
         # Detect FUTURE > ETF cross
         ETF_asks = self.order_books[ETF]['ask_prices']
@@ -271,14 +275,14 @@ class AutoTrader(BaseAutoTrader):
         diff = FUT_bids[0] - ETF_asks[0]
         if diff > 0 and diff > (ETF_asks[0] * TAKER_FEE):
             if ETF_asks[0] not in self.asks:
-                order_id = next(self.order_ids)
                 size = min(self.order_books[ETF]['ask_volumes'][0], self.order_books[FUT]['bid_volumes'][0])
                 max_allowed = POSITION_LIMIT - LOT_SIZE - self.position
                 position_target = int(round(((POSITION_LIMIT - LOT_SIZE) / 3.0) * diff))
                 size = max(0, min(max_allowed, size, position_target - self.position))
-                self.logger.info(f"Trading FUT>ETF crossed market by buying {size}@{ETF_asks[0]}, expecting {diff} with {ETF_asks[0] * TAKER_FEE} in fees")
-                self.send_insert_order(order_id, Side.BUY, ETF_asks[0], size, Lifespan.FILL_AND_KILL)
-                self.arb_bids.add(order_id)
+                if size > 0:
+                    self.logger.info(f"Trading FUT>ETF crossed market by buying {size}@{ETF_asks[0]}, expecting {diff} with {ETF_asks[0] * TAKER_FEE} in fees")
+                    order_id = self.compliance_layer.place_order(ETF, Side.BUY, ETF_asks[0], size, Lifespan.FILL_AND_KILL, 'ARB')
+                    self.arb_bids.add(order_id)
 
     def on_order_book_update_message(self, instrument: Instrument, sequence_number: int, ask_prices: List[int],
                                      ask_volumes: List[int], bid_prices: List[int], bid_volumes: List[int]) -> None:
@@ -300,25 +304,11 @@ class AutoTrader(BaseAutoTrader):
         if err_msg is not None:
             self.logger.warn(err_msg)
 
-
-        #self.find_arbitrage(sequence_number)
+        if ENABLE_ARBITRAGE:
+            self.find_arbitrage(sequence_number)
 
         if instrument == Instrument.FUTURE:
             price_adjustment = - (self.position // (3 * LOT_SIZE)) * TICK_SIZE_IN_CENTS
-
-            # for index, price in enumerate(bid_prices):
-            #     if bid_volumes[index] >= 20:
-            #         best_valid_bid = price
-            #         break
-            # else:
-            #     best_valid_bid = filter(lambda x: x != 0, bid_prices)[-1]
-
-            # for index, price in enumerate(ask_prices):
-            #     if ask_volumes[index] >= 20:
-            #         best_valid_ask = price
-            #         break
-            # else:
-            #     best_valid_ask = filter(lambda x: x != 0, ask_prices)[-1]
 
             self.future_mid_price = int(round((bid_prices[0] + ask_prices[0]) / 2, -2))
             self.logger.info(f"Future trading at {bid_prices[0]}:{ask_prices[0]} with mid price {self.future_mid_price}")
@@ -329,25 +319,25 @@ class AutoTrader(BaseAutoTrader):
             new_ask_price = ask_prices[0] + price_adjustment + additional_spread if ask_prices[0] != 0 else 0
 
             if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
-                self.send_cancel_order(self.bid_id)
+                self.compliance_layer.cancel_order(self.bid_id)
                 self.bid_id = 0
             if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
-                self.send_cancel_order(self.ask_id)
+                self.compliance_layer.cancel_order(self.ask_id)
                 self.ask_id = 0
 
-            if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
-                self.bid_id = next(self.order_ids)
-                self.bid_price = new_bid_price
+            if self.bid_id == 0 and new_bid_price != 0:
                 bid_size = max(0, min(LOT_SIZE, POSITION_LIMIT - self.position))
-                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, bid_size, Lifespan.GOOD_FOR_DAY)
-                self.bids.add(self.bid_id)
+                if bid_size > 0:
+                    self.bid_id = self.compliance_layer.place_order(ETF, Side.BUY, new_bid_price,
+                                                                    bid_size, Lifespan.GOOD_FOR_DAY, 'MM')
+                    self.bids.add(self.bid_id)
 
-            if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
-                self.ask_id = next(self.order_ids)
-                self.ask_price = new_ask_price
+            if self.ask_id == 0 and new_ask_price != 0:
                 ask_size = max(0, min(LOT_SIZE, POSITION_LIMIT + self.position))
-                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, ask_size, Lifespan.GOOD_FOR_DAY)
-                self.asks.add(self.ask_id)
+                if ask_size > 0:
+                    self.ask_id = self.compliance_layer.place_order(ETF, Side.SELL, new_ask_price,
+                                                                    ask_size, Lifespan.GOOD_FOR_DAY, 'MM')
+                    self.asks.add(self.ask_id)
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
         """Called when one of your orders is filled, partially or fully.
@@ -366,17 +356,21 @@ class AutoTrader(BaseAutoTrader):
             self.logger.info(f"hedging with future at mid price of {self.future_mid_price}")
             if client_order_id in buy_set:
                 self.position += volume
-                self.send_hedge_order(next(self.order_ids), Side.ASK, self.future_mid_price, volume)
+                # TODO pass correct subtrader name
+                self.compliance_layer.place_order(FUT, Side.ASK, self.future_mid_price, volume, None, 'MM')
             elif client_order_id in sell_set:
                 self.position -= volume
-                self.send_hedge_order(next(self.order_ids), Side.BID, self.future_mid_price, volume)
+                # TODO pass correct subtrader name
+                self.compliance_layer.place_order(FUT, Side.BID, self.future_mid_price, volume, None, 'MM')
         else:
             if client_order_id in buy_set:
                 self.position += volume
-                self.send_hedge_order(next(self.order_ids), Side.ASK, MIN_BID_NEAREST_TICK, volume)
+                # TODO pass correct subtrader name
+                self.compliance_layer.place_order(FUT, Side.ASK, MIN_BID_NEAREST_TICK, volume, None, 'MM')
             elif client_order_id in sell_set:
                 self.position -= volume
-                self.send_hedge_order(next(self.order_ids), Side.BID, MAX_ASK_NEAREST_TICK, volume)
+                # TODO pass correct subtrader name
+                self.compliance_layer.place_order(FUT, Side.BID, MAX_ASK_NEAREST_TICK, volume, None, 'MM')
 
     def on_order_status_message(self, client_order_id: int, fill_volume: int, remaining_volume: int,
                                 fees: int) -> None:
