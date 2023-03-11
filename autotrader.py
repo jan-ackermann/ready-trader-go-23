@@ -74,14 +74,21 @@ class DataStore:
             return 0
 
     def get_order_book(self, instrument: Instrument, include_own: bool):
-        book = self.order_books[instrument]
+        book = self.order_books[instrument].copy()
         if include_own:
             return book
         else:
             # Very strict for now. Does not subtract own order volume from order book, but removes orders at the same
             # price as ones we have placed for this instrument
-            # TODO match with active orders
-            return None
+            prices = list()
+            for order_id, order in self.active_orders.items():
+                prices.append(order.price)
+            prices = np.array(prices)
+
+            bid_prices, bid_volumes, ask_prices, ask_volumes = book
+            bid_mask = (bid_prices != prices).all()
+            ask_mask = (ask_prices != prices).all()
+            return [bid_prices[bid_mask], bid_volumes[bid_mask], ask_prices[ask_mask], ask_volumes[ask_mask]]
 
     def integrate_new_order_book(self, instrument: Instrument, order_book):
         seq = self.sequence_numbers['order_book']
@@ -107,8 +114,9 @@ class DataStore:
 class ComplianceLayer:
     def __init__(self, auto_trader):
         self.auto_trader = auto_trader
-        self.data = self.auto_trader.data_store
+        self.data: DataStore = self.auto_trader.data_store
         self.position_allowances = dict()
+        self.order_ids = itertools.count(1)
 
     def init_allowances(self):
         ratio_allowances = dict()
@@ -118,26 +126,63 @@ class ComplianceLayer:
         # Turn these ratios into (integer) lots
         self.position_allowances = {subtrader_name: int(floor(ratio * POSITION_LIMIT)) for subtrader_name, ratio in ratio_allowances}
 
-    def ensure_legal(self):
+    def is_state_legal(self) -> bool:
         # Check current overall position within bounds
         if not(-POSITION_LIMIT <= self.data.get_position(ETF) <= POSITION_LIMIT):
-            self.panic()
+            return False
         if not (-POSITION_LIMIT <= self.data.get_position(FUT) <= POSITION_LIMIT):
-            self.panic()
+            return False
 
         # Check current position within bounds for subtraders
         for subtrader_name in SUBTRADERS:
             allowance = self.position_allowances[subtrader_name]
             if not(-allowance <= self.data.get_position(ETF, subtrader_name) <= allowance):
-                self.panic()
+                return False
             if not(-allowance <= self.data.get_position(FUT, subtrader_name) <= allowance):
-                self.panic()
+                return False
 
         # Check that no combination of trade executions can exceed the overall position limits
         # ...
 
         # Check that no combination of trade executions can exceed the subtrader position allowance
         # ...
+
+        return True
+
+    def cancel_order(self, order_id: int):
+        # There is no compliance logic to perform here, cancelled orders do not bring risk
+        if order_id in self.data.active_orders:
+            del self.data.active_orders[order_id]
+            # TODO Maybe also notify the subtrader
+        else:
+            self.auto_trader.logger.warning(f"Tried to cancel order with id {order_id}, that does not (anymore) have "
+                                            f"an internal record!")
+        self.auto_trader.send_cancel_order(order_id)
+
+    def place_order(self, instrument: Instrument, side: Side, price: int,
+                    volume: int, lifespan: Lifespan, subtrader: str) -> int:
+        if instrument not in (ETF, FUT):
+            self.auto_trader.logger.warning(f"Attempted to trade in unknown instrument {instrument}!")
+            return -1
+
+        order_id = next(self.order_ids)
+
+        # Try place order internally
+        self.data.active_orders[order_id] = Order(order_id, instrument, price, volume, side, subtrader)
+
+        # Test legality
+        if self.is_state_legal():
+            if instrument == ETF:
+                self.auto_trader.send_insert_order(order_id, side, price, volume, lifespan)
+            elif instrument == FUT:
+                self.auto_trader.send_hedge_order(order_id, side, price, volume)
+            return order_id
+        else:
+            # Reject order
+            del self.data.active_orders[order_id]
+            self.auto_trader.logger.warning(f"Tried to place trade that would have resulted in an illegal state in "
+                                            f"instrument {instrument} by subtrader {subtrader}")
+            return -1
 
     def panic(self):
         # Try to recover
@@ -163,7 +208,6 @@ class AutoTrader(BaseAutoTrader):
     def __init__(self, loop: asyncio.AbstractEventLoop, team_name: str, secret: str):
         """Initialise a new instance of the AutoTrader class."""
         super().__init__(loop, team_name, secret)
-        self.order_ids = itertools.count(1)
         self.bids = set()
         self.asks = set()
         self.arb_bids = set()
@@ -214,7 +258,9 @@ class AutoTrader(BaseAutoTrader):
             if ETF_bids[0] not in self.bids:
                 order_id = next(self.order_ids)
                 size = min(self.order_books[ETF]['bid_volumes'][0], self.order_books[FUT]['ask_volumes'][0])
-                size = max(0, min(POSITION_LIMIT - LOT_SIZE + self.position, size))
+                max_allowed = POSITION_LIMIT - LOT_SIZE + self.position
+                position_target = int(round(((POSITION_LIMIT - LOT_SIZE) / 3.0) * diff))
+                size = max(0, min(max_allowed, size, position_target + self.position))
                 self.logger.info(f"Trading ETF>FUT crossed market by selling {size}@{ETF_bids[0]}, expecting {diff} with {ETF_bids[0] * TAKER_FEE} in fees")
                 self.send_insert_order(order_id, Side.SELL, ETF_bids[0], size, Lifespan.FILL_AND_KILL)
                 self.arb_asks.add(order_id)
@@ -227,7 +273,9 @@ class AutoTrader(BaseAutoTrader):
             if ETF_asks[0] not in self.asks:
                 order_id = next(self.order_ids)
                 size = min(self.order_books[ETF]['ask_volumes'][0], self.order_books[FUT]['bid_volumes'][0])
-                size = max(0, min(POSITION_LIMIT - LOT_SIZE - self.position, size))
+                max_allowed = POSITION_LIMIT - LOT_SIZE - self.position
+                position_target = int(round(((POSITION_LIMIT - LOT_SIZE) / 3.0) * diff))
+                size = max(0, min(max_allowed, size, position_target - self.position))
                 self.logger.info(f"Trading FUT>ETF crossed market by buying {size}@{ETF_asks[0]}, expecting {diff} with {ETF_asks[0] * TAKER_FEE} in fees")
                 self.send_insert_order(order_id, Side.BUY, ETF_asks[0], size, Lifespan.FILL_AND_KILL)
                 self.arb_bids.add(order_id)
@@ -253,7 +301,7 @@ class AutoTrader(BaseAutoTrader):
             self.logger.warn(err_msg)
 
 
-        self.find_arbitrage(sequence_number)
+        #self.find_arbitrage(sequence_number)
 
         if instrument == Instrument.FUTURE:
             price_adjustment = - (self.position // (3 * LOT_SIZE)) * TICK_SIZE_IN_CENTS
