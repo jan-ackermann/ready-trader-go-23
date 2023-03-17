@@ -20,6 +20,7 @@
 #include <boost/asio/io_context.hpp>
 
 #include <ready_trader_go/logging.h>
+#include <cmath>
 
 #include "autotrader.h"
 
@@ -33,16 +34,13 @@ constexpr int TICK_SIZE_IN_CENTS = 100;
 constexpr int MIN_BID_NEARST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 
-<<<<<<< HEAD
 constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
 
-constexpr Instrument FUT = Instrument.FUTURE;
-constexpr Instrument ETF = Instrument.ETF;
+constexpr Instrument FUT = Instrument::FUTURE;
+constexpr Instrument ETF = Instrument::ETF;
 constexpr double TAKER_FEE = 0.0002;
 constexpr double MAKER_FEE = -0.0001;
 
-=======
->>>>>>> 1a6fbbb2ed785b1c6b28cf9d41e1c0503ffe462e
 AutoTrader::AutoTrader(boost::asio::io_context& context) : BaseAutoTrader(context)
 {
 }
@@ -78,7 +76,6 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                                          const std::array<unsigned long, TOP_LEVEL_COUNT>& bidPrices,
                                          const std::array<unsigned long, TOP_LEVEL_COUNT>& bidVolumes)
 {
-<<<<<<< HEAD
     if (instrument == FUT) {
         // Get out of bad orders right away
         // Cancel an arbitragable bid order
@@ -87,7 +84,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
             mBidId = 0;
         }
         // Cancel an arbitragable ask order
-        if (bidPrices[0] > mAskPrices) {
+        if (bidPrices[0] > mAskPrice) {
             SendCancelOrder(mAskId);
             mAskId = 0;
         }
@@ -136,49 +133,11 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
         }
     }
 
-=======
->>>>>>> 1a6fbbb2ed785b1c6b28cf9d41e1c0503ffe462e
     RLOG(LG_AT, LogLevel::LL_INFO) << "order book received for " << instrument << " instrument"
                                    << ": ask prices: " << askPrices[0]
                                    << "; ask volumes: " << askVolumes[0]
                                    << "; bid prices: " << bidPrices[0]
                                    << "; bid volumes: " << bidVolumes[0];
-<<<<<<< HEAD
-=======
-
-    if (instrument == Instrument::FUTURE)
-    {
-        unsigned long priceAdjustment = - (mPosition / LOT_SIZE) * TICK_SIZE_IN_CENTS;
-        unsigned long newAskPrice = (askPrices[0] != 0) ? askPrices[0] + priceAdjustment : 0;
-        unsigned long newBidPrice = (bidPrices[0] != 0) ? bidPrices[0] + priceAdjustment : 0;
-
-        if (mAskId != 0 && newAskPrice != 0 && newAskPrice != mAskPrice)
-        {
-            SendCancelOrder(mAskId);
-            mAskId = 0;
-        }
-        if (mBidId != 0 && newBidPrice != 0 && newBidPrice != mBidPrice)
-        {
-            SendCancelOrder(mBidId);
-            mBidId = 0;
-        }
-
-        if (mAskId == 0 && newAskPrice != 0 && mPosition > -POSITION_LIMIT)
-        {
-            mAskId = mNextMessageId++;
-            mAskPrice = newAskPrice;
-            SendInsertOrder(mAskId, Side::SELL, newAskPrice, LOT_SIZE, Lifespan::GOOD_FOR_DAY);
-            mAsks.emplace(mAskId);
-        }
-        if (mBidId == 0 && newBidPrice != 0 && mPosition < POSITION_LIMIT)
-        {
-            mBidId = mNextMessageId++;
-            mBidPrice = newBidPrice;
-            SendInsertOrder(mBidId, Side::BUY, newBidPrice, LOT_SIZE, Lifespan::GOOD_FOR_DAY);
-            mBids.emplace(mBidId);
-        }
-    }
->>>>>>> 1a6fbbb2ed785b1c6b28cf9d41e1c0503ffe462e
 }
 
 void AutoTrader::OrderFilledMessageHandler(unsigned long clientOrderId,
