@@ -117,18 +117,24 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
             int bidSize = POSITION_LIMIT - mPosition;
             if (bidSize > 0) {
                 mBidId = mNextMessageId++;
-                mBidPrice = newBidPrice;
                 SendInsertOrder(mBidId, Side::BUY, newBidPrice, std::min(LOT_SIZE, bidSize), Lifespan::GOOD_FOR_DAY);
+                mBidPrice = newBidPrice;
+                mBidSize = bidSize;
                 mBids.emplace(mBidId);
+            } else {
+                bidSize = 0;
             }
         }
         if (mAskId == 0 && newAskPrice != 0) {
             int askSize = mPosition - POSITION_LIMIT;
             if (askSize > 0) {
                 mAskId = mNextMessageId++;
-                mAskPrice = newAskPrice;
                 SendInsertOrder(mAskId, Side::SELL, newAskPrice, std::min(LOT_SIZE, askSize), Lifespan::GOOD_FOR_DAY);
+                mAskPrice = newAskPrice;
+                mAskSize = askSize;
                 mAsks.emplace(mAskId);
+            } else {
+                askSize = 0;
             }
         }
     }
@@ -138,6 +144,9 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                                    << "; ask volumes: " << askVolumes[0]
                                    << "; bid prices: " << bidPrices[0]
                                    << "; bid volumes: " << bidVolumes[0];
+
+    RLOG(LG_AT, LogLevel::LL_INFO) << "making market for ETF " << mBidSize << " @ " << mBidPrice << ":"
+                                   << mAskPrice << " @ " << mAskSize;
 }
 
 void AutoTrader::OrderFilledMessageHandler(unsigned long clientOrderId,
