@@ -27,17 +27,6 @@ using namespace ReadyTraderGo;
 
 RTG_INLINE_GLOBAL_LOGGER_WITH_CHANNEL(LG_AT, "AUTO")
 
-constexpr unsigned int LOT_SIZE = 10;
-constexpr int POSITION_LIMIT = 100;
-constexpr int TICK_SIZE_IN_CENTS = 100;
-constexpr int MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
-constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
-
-constexpr Instrument FUT = Instrument::FUTURE;
-constexpr Instrument ETF = Instrument::ETF;
-constexpr double TAKER_FEE = 0.0002;
-constexpr double MAKER_FEE = -0.0001;
-
 AutoTrader::AutoTrader(boost::asio::io_context& context) : BaseAutoTrader(context)
 {
 }
@@ -323,3 +312,4 @@ int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
 }
 // python rtg.py run autotrader
 // ./compile.sh
+// git pull; ./compile.sh; python rtg.py run autotrader

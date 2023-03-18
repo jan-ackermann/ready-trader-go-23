@@ -37,10 +37,23 @@ struct Order {
     unsigned long price, volume, orderId;
 };
 
+constexpr unsigned int LOT_SIZE = 10;
+constexpr int POSITION_LIMIT = 100;
+constexpr int TICK_SIZE_IN_CENTS = 100;
+constexpr int MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
+constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
+
+constexpr Instrument FUT = Instrument::FUTURE;
+constexpr Instrument ETF = Instrument::ETF;
+constexpr double TAKER_FEE = 0.0002;
+constexpr double MAKER_FEE = -0.0001;
+
 constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
 constexpr int NUM_CLONES = 3;
 constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
 constexpr size_t MAX_MESSAGE_FREQ = 50;
+
+using ptime = boost::posix_time::ptime;
 
 class MessageFrequencyTracker {
     using arr_type = std::array<ptime, 16 * MAX_MESSAGE_FREQ>;
