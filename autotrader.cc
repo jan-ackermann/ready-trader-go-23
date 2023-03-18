@@ -27,6 +27,8 @@ using namespace ReadyTraderGo;
 
 RTG_INLINE_GLOBAL_LOGGER_WITH_CHANNEL(LG_AT, "AUTO")
 
+time_duration MessageFrequencyTracker::PeriodLength = boost::posix_time::seconds(1);
+
 AutoTrader::AutoTrader(boost::asio::io_context& context) : BaseAutoTrader(context)
 {
 }
@@ -262,42 +264,53 @@ void AutoTrader::TradeTicksMessageHandler(Instrument instrument,
 void AutoTrader::SendAmendOrder(unsigned long clientOrderId, unsigned long volume)
 {
     BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
-    NoteMessage();
+    mMessageTracker.NoteMessage();
 }
 
 void AutoTrader::SendCancelOrder(unsigned long clientOrderId)
 {
     BaseAutoTrader::SendCancelOrder(clientOrderId);
-    NoteMessage();
+    mMessageTracker.NoteMessage();
 }
 
 void AutoTrader::SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume)
 {
     BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
-    NoteMessage();
+    mMessageTracker.NoteMessage();
 }
 
 void AutoTrader::SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan)
 {
     BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
-    NoteMessage();
+    mMessageTracker.NoteMessage();
 }
 
 void MessageFrequencyTracker::NoteMessage()
 {
     // Add new message and advance pointer
     // For latency reasons, do not remove timed out messages
-    ptime currentTime = microsec_clock::universal_time();
+    ptime currentTime = boost::posix_time::microsec_clock::universal_time();
     *(mTail++) = currentTime;
     mRollingMessageCount++;
     if (mTail == mMem.end())
         mTail = mMem.begin();
+
+    if (true) {
+        // Remove timed out messages
+        //ptime currentTime = boost::posix_time::microsec_clock::universal_time();
+        while (mHead != mTail && currentTime - *mHead > MessageFrequencyTracker::PeriodLength) {
+            mRollingMessageCount--;
+            if (++mHead == mMem.end())
+                mHead = mMem.begin();
+        }
+        RLOG(LG_AT, LogLevel::LL_WARNING) << " rolling message count " << mRollingMessageCount;
+    }
 }
 
 int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
 {
     // Remove timed out messages
-    ptime currentTime = microsec_clock::universal_time();
+    ptime currentTime = boost::posix_time::microsec_clock::universal_time();
     while (mHead != mTail && currentTime - *mHead > MessageFrequencyTracker::PeriodLength) {
         mRollingMessageCount--;
         if (++mHead == mMem.end())
@@ -305,10 +318,10 @@ int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
     }
     
     // Figure out what message strategy is guranteed to be compliant
-    constexpr unsigned long safetyMargin = 5;
+    constexpr unsigned long safetyMargin = 0;
     constexpr unsigned long maxOpenOrders = 2 * NUM_CLONES;
     unsigned long freeMessages = MAX_MESSAGE_FREQ - mRollingMessageCount;
-    return std::max(0, (freeMessages - maxOpenOrders - safetyMargin) / 2);
+    return (int)std::max(0UL, (freeMessages - maxOpenOrders - safetyMargin) / 2);
 }
 // python rtg.py run autotrader
 // ./compile.sh

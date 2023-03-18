@@ -40,29 +40,30 @@ struct Order {
 constexpr unsigned int LOT_SIZE = 10;
 constexpr int POSITION_LIMIT = 100;
 constexpr int TICK_SIZE_IN_CENTS = 100;
-constexpr int MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
-constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
+constexpr int MIN_BID_NEAREST_TICK = (ReadyTraderGo::MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
+constexpr int MAX_ASK_NEAREST_TICK = ReadyTraderGo::MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 
-constexpr Instrument FUT = Instrument::FUTURE;
-constexpr Instrument ETF = Instrument::ETF;
+constexpr ReadyTraderGo::Instrument FUT = ReadyTraderGo::Instrument::FUTURE;
+constexpr ReadyTraderGo::Instrument ETF = ReadyTraderGo::Instrument::ETF;
 constexpr double TAKER_FEE = 0.0002;
 constexpr double MAKER_FEE = -0.0001;
 
 constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
-constexpr int NUM_CLONES = 3;
+constexpr int NUM_CLONES = 5;
 constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
 constexpr size_t MAX_MESSAGE_FREQ = 50;
 
 using ptime = boost::posix_time::ptime;
+using time_duration = boost::posix_time::time_duration;
 
 class MessageFrequencyTracker {
     using arr_type = std::array<ptime, 16 * MAX_MESSAGE_FREQ>;
     arr_type mMem;
     arr_type::iterator mHead, mTail;
     unsigned long mRollingMessageCount;
-    static constexpr time_duration PeriodLength = seconds(1);
+    static time_duration PeriodLength;
 public:
-    MessageFrequencyTracker() : mRollingMessageCount(0), mMem{} {
+    MessageFrequencyTracker() : mMem{}, mRollingMessageCount(0) {
         mHead = mMem.begin();
         mTail = mMem.begin();
     }
@@ -136,10 +137,10 @@ public:
                                   const std::array<unsigned long, ReadyTraderGo::TOP_LEVEL_COUNT>& bidVolumes) override;
 
     // Overrides for message frequency tracking
-    void SendAmendOrder(unsigned long clientOrderId, unsigned long volume);
-    void SendCancelOrder(unsigned long clientOrderId);
-    void SendHedgeOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume);
-    void SendInsertOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume, ReadyTraderGo::Lifespan lifespan);
+    void SendAmendOrder(unsigned long clientOrderId, unsigned long volume) override;
+    void SendCancelOrder(unsigned long clientOrderId) override;
+    void SendHedgeOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume) override;
+    void SendInsertOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume, ReadyTraderGo::Lifespan lifespan) override;
 
 private:
     unsigned long mNextMessageId = 1;
