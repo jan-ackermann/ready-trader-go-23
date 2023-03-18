@@ -19,7 +19,6 @@
 
 #include <boost/asio/io_context.hpp>
 
-#include <ready_trader_go/logging.h>
 #include <cmath>
 
 #include "autotrader.h"
@@ -322,3 +321,5 @@ int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
     unsigned long freeMessages = MAX_MESSAGE_FREQ - mRollingMessageCount;
     return std::max(0, (freeMessages - maxOpenOrders - safetyMargin) / 2);
 }
+// python rtg.py run autotrader
+// ./compile.sh

@@ -28,6 +28,7 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 #include <ready_trader_go/baseautotrader.h>
+#include <ready_trader_go/logging.h>
 #include <ready_trader_go/types.h>
 
 struct Order {
@@ -121,8 +122,8 @@ public:
     // Overrides for message frequency tracking
     void SendAmendOrder(unsigned long clientOrderId, unsigned long volume);
     void SendCancelOrder(unsigned long clientOrderId);
-    void SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume);
-    void SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan);
+    void SendHedgeOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume);
+    void SendInsertOrder(unsigned long clientOrderId, ReadyTraderGo::Side side, unsigned long price, unsigned long volume, ReadyTraderGo::Lifespan lifespan);
 
 private:
     unsigned long mNextMessageId = 1;
