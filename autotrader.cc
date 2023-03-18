@@ -28,13 +28,15 @@ using namespace ReadyTraderGo;
 
 RTG_INLINE_GLOBAL_LOGGER_WITH_CHANNEL(LG_AT, "AUTO")
 
-constexpr int LOT_SIZE = 10;
+constexpr unsigned int LOT_SIZE = 10;
 constexpr int POSITION_LIMIT = 100;
 constexpr int TICK_SIZE_IN_CENTS = 100;
-constexpr int MIN_BID_NEARST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
+constexpr int MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 
 constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
+constexpr int NUM_CLONES = 3;
+constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
 
 constexpr Instrument FUT = Instrument::FUTURE;
 constexpr Instrument ETF = Instrument::ETF;
@@ -55,7 +57,7 @@ void AutoTrader::ErrorMessageHandler(unsigned long clientOrderId,
                                      const std::string& errorMessage)
 {
     RLOG(LG_AT, LogLevel::LL_INFO) << "error with order " << clientOrderId << ": " << errorMessage;
-    if (clientOrderId != 0 && ((mAsks.count(clientOrderId) == 1) || (mBids.count(clientOrderId) == 1)))
+    if (clientOrderId != 0 && ((mAskOrderIdToOrder.count(clientOrderId) == 1) || (mBidOrderIdToOrder.count(clientOrderId) == 1)))
     {
         OrderStatusMessageHandler(clientOrderId, 0, 0, 0);
     }
@@ -78,65 +80,123 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
 {
     if (instrument == FUT) {
         // Get out of bad orders right away
-        // Cancel an arbitragable bid order
-        if (askPrices[0] < mBidPrice) {
-            SendCancelOrder(mBidId);
-            mBidId = 0;
+        // Cancel arbitragable bid orders
+        //std::array<unsigned long, 32> cancelled_orders {};
+        //unsigned int index = 0;
+        for (unsigned long price : mBidPrices) {
+            if (askPrices[0] < price) {
+                unsigned int orderId = mBidToOrder[price]->orderId;
+                SendCancelOrder(orderId);
+                RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
+                //cancelled_orders[index++] = orderId;
+            }
         }
-        // Cancel an arbitragable ask order
-        if (bidPrices[0] > mAskPrice) {
-            SendCancelOrder(mAskId);
-            mAskId = 0;
+        // Cancel arbitragable ask orders
+        for (unsigned long price : mAskPrices) {
+            if (bidPrices[0] > price) {
+                unsigned int orderId = mAskToOrder[price]->orderId;
+                SendCancelOrder(orderId);
+                RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
+                //cancelled_orders[index++] = orderId;
+            }
         }
 
         // Proper market making code
-        //self.future_mid_price = int(round((bid_prices[0] + ask_prices[0]) / 2, -2))
-        //self.logger.info(f"Future trading at {bid_prices[0]}:{ask_prices[0]} with mid price {self.future_mid_price}")
-        
-        constexpr unsigned long additional_spread = 1 * TICK_SIZE_IN_CENTS;
-        unsigned long priceAdjustment = -((int)round(mPosition / (3.0 * LOT_SIZE))) * TICK_SIZE_IN_CENTS;
-        
-        unsigned long newBidPrice = 0, newAskPrice = 0;
+        //unsigned long priceAdjustment = -((int)round((double)mPosition / (3.0 * LOT_SIZE))) * TICK_SIZE_IN_CENTS;
+        unsigned long priceAdjustment = 0;
+        if (mPosition >= 50) {
+            priceAdjustment = -((int)round(((double)mPosition - 50.0) / (2.5 * LOT_SIZE))) * TICK_SIZE_IN_CENTS;
+        } else if (mPosition <= -50) {
+            priceAdjustment = -((int)round(((double)mPosition + 50.0) / (2.5 * LOT_SIZE))) * TICK_SIZE_IN_CENTS;
+        }
+
+        // Adjust bid side
         if (bidPrices[0] != 0) {
-            newBidPrice = bidPrices[0] + priceAdjustment - additional_spread;
+            // Calculate front of the book bid
+            unsigned int frontBid = bidPrices[0] + priceAdjustment - ADDITIONAL_SPREAD;
+            // Count to compute the maximum bid size
+            // and also mark orders for cancellation that are too far away
+            long maximumBidSize = POSITION_LIMIT - mPosition;
+            for (unsigned int price : mBidPrices) {
+                Order* order = mBidToOrder[price];
+                //RLOG(LG_AT, LogLevel::LL_INFO) << price << " and volume " << order->volume << " and id " << order->orderId << " with maximumBidSize " << maximumBidSize;
+                if (price > frontBid || price <= frontBid - NUM_CLONES * TICK_SIZE_IN_CENTS) {
+                    SendCancelOrder(order->orderId);
+                    //RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << order->orderId << " at price " << price;
+                    //cancelled_orders[index++] = order->orderId;
+                    // This order will be cancelled, but it will contribute still
+                    // towards reducing the maximum bid size, because it might be
+                    // filled before the cancellation is effective
+                    maximumBidSize -= (long)order->volume;
+                } else {
+                    // Order is fine
+                    maximumBidSize -= (long)order->volume;
+                }
+            }
+            for (unsigned int offset = 0; offset < NUM_CLONES && maximumBidSize > 0; offset++) {
+                unsigned int price = frontBid - offset * TICK_SIZE_IN_CENTS;
+                if (mBidPrices.count(price) == 0) {
+                    unsigned int volume = std::min((long)LOT_SIZE, maximumBidSize);
+                    unsigned int orderId = mNextMessageId++;
+                    //RLOG(LG_AT, LogLevel::LL_INFO) << "putting in order at " << price << " with maximumBidSize " << maximumBidSize << " and id " << orderId;
+                    SendInsertOrder(orderId, Side::BUY, price, volume, Lifespan::GOOD_FOR_DAY);
+                    auto* order = new Order(price, volume, orderId);
+                    mBidPrices.emplace(price);
+                    mBidToOrder[price] = order;
+                    mBidOrderIdToOrder[orderId] = order;
+                    maximumBidSize -= volume;
+                }
+            }
         }
+
+        // Adjust ask side
         if (askPrices[0] != 0) {
-            newAskPrice = askPrices[0] + priceAdjustment + additional_spread;
-        }
-
-        if (mBidId != 0 && newBidPrice != 0 && newBidPrice != mBidPrice) {
-            SendCancelOrder(mBidId);
-            mBidId = 0;
-        }
-        if (mAskId != 0 && newAskPrice != 0 && newAskPrice != mAskPrice) {
-            SendCancelOrder(mAskId);
-            mAskId = 0;
-        }
-
-        if (mBidId == 0 && newBidPrice != 0) {
-            int bidSize = POSITION_LIMIT - mPosition;
-            if (bidSize > 0) {
-                mBidId = mNextMessageId++;
-                SendInsertOrder(mBidId, Side::BUY, newBidPrice, std::min(LOT_SIZE, bidSize), Lifespan::GOOD_FOR_DAY);
-                mBidPrice = newBidPrice;
-                mBidSize = bidSize;
-                mBids.emplace(mBidId);
-            } else {
-                bidSize = 0;
+            // Calculate front of the book ask
+            unsigned int frontAsk = askPrices[0] + priceAdjustment - ADDITIONAL_SPREAD;
+            // Count to compute the maximum ask size
+            // and also mark orders for cancellation that are too far away
+            long maximumAskSize = POSITION_LIMIT + mPosition;
+            for (unsigned int price : mAskPrices) {
+                Order* order = mAskToOrder[price];
+                //RLOG(LG_AT, LogLevel::LL_INFO) << price << " and volume " << order->volume << " and id " << order->orderId << " with maximumBidSize " << maximumBidSize;
+                if (price < frontAsk || price >= frontAsk + NUM_CLONES * TICK_SIZE_IN_CENTS) {
+                    SendCancelOrder(order->orderId);
+                    //RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << order->orderId << " at price " << price;
+                    //cancelled_orders[index++] = order->orderId;
+                    // This order will be cancelled, but it will contribute still
+                    // towards reducing the maximum ask size, because it might be
+                    // filled before the cancellation is effective
+                    maximumAskSize -= (long)order->volume;
+                } else {
+                    // Order is fine
+                    maximumAskSize -= (long)order->volume;
+                }
+            }
+            for (unsigned int offset = 0; offset < NUM_CLONES && maximumAskSize > 0; offset++) {
+                unsigned int price = frontAsk + offset * TICK_SIZE_IN_CENTS;
+                if (mAskPrices.count(price) == 0) {
+                    unsigned int volume = std::min((long)LOT_SIZE, maximumAskSize);
+                    unsigned int orderId = mNextMessageId++;
+                    //RLOG(LG_AT, LogLevel::LL_INFO) << "putting in order at " << price << " with maximumBidSize " << maximumBidSize << " and id " << orderId;
+                    SendInsertOrder(orderId, Side::SELL, price, volume, Lifespan::GOOD_FOR_DAY);
+                    auto* order = new Order(price, volume, orderId);
+                    mAskPrices.emplace(price);
+                    mAskToOrder[price] = order;
+                    mAskOrderIdToOrder[orderId] = order;
+                    maximumAskSize -= volume;
+                }
             }
         }
-        if (mAskId == 0 && newAskPrice != 0) {
-            int askSize = mPosition - POSITION_LIMIT;
-            if (askSize > 0) {
-                mAskId = mNextMessageId++;
-                SendInsertOrder(mAskId, Side::SELL, newAskPrice, std::min(LOT_SIZE, askSize), Lifespan::GOOD_FOR_DAY);
-                mAskPrice = newAskPrice;
-                mAskSize = askSize;
-                mAsks.emplace(mAskId);
-            } else {
-                askSize = 0;
-            }
+
+        /*unsigned int sumorders = 0;
+        RLOG(LG_AT, LogLevel::LL_INFO) << "Currently active orders are:";
+        for (unsigned int price : mBidPrices) {
+            RLOG(LG_AT, LogLevel::LL_INFO) << "ID: " << mBidToOrder[price]->orderId << " at price " << price << " for " << mBidToOrder[price]->volume;
+            sumorders += mBidToOrder[price]->volume;
         }
+        if (mPosition + sumorders > POSITION_LIMIT) {
+            RLOG(LG_AT, LogLevel::LL_ERROR) << "mPosition + sumorders = " << (sumorders + mPosition);
+        }*/
     }
 
     RLOG(LG_AT, LogLevel::LL_INFO) << "order book received for " << instrument << " instrument"
@@ -153,18 +213,18 @@ void AutoTrader::OrderFilledMessageHandler(unsigned long clientOrderId,
                                            unsigned long price,
                                            unsigned long volume)
 {
+    if (mBidOrderIdToOrder.count(clientOrderId) != 0) {
+        SendHedgeOrder(mNextMessageId, Side::SELL, MIN_BID_NEAREST_TICK, volume);
+        mNextMessageId++;
+        mPosition += (long)volume;
+    } else { // if (mAsks.count(clientOrderId) != 0) {
+        SendHedgeOrder(mNextMessageId, Side::BUY, MAX_ASK_NEAREST_TICK, volume);
+        mNextMessageId++;
+        mPosition -= (long)volume;
+    }
+
     RLOG(LG_AT, LogLevel::LL_INFO) << "order " << clientOrderId << " filled for " << volume
                                    << " lots at $" << price << " cents";
-    if (mAsks.count(clientOrderId) == 1)
-    {
-        mPosition -= (long)volume;
-        SendHedgeOrder(mNextMessageId++, Side::BUY, MAX_ASK_NEAREST_TICK, volume);
-    }
-    else if (mBids.count(clientOrderId) == 1)
-    {
-        mPosition += (long)volume;
-        SendHedgeOrder(mNextMessageId++, Side::SELL, MIN_BID_NEARST_TICK, volume);
-    }
 }
 
 void AutoTrader::OrderStatusMessageHandler(unsigned long clientOrderId,
@@ -172,19 +232,28 @@ void AutoTrader::OrderStatusMessageHandler(unsigned long clientOrderId,
                                            unsigned long remainingVolume,
                                            signed long fees)
 {
-    if (remainingVolume == 0)
-    {
-        if (clientOrderId == mAskId)
-        {
-            mAskId = 0;
+    if (mBidOrderIdToOrder.count(clientOrderId) != 0) {
+        if (remainingVolume == 0) {
+            Order* order = mBidOrderIdToOrder[clientOrderId];
+            mBidOrderIdToOrder.erase(clientOrderId);
+            mBidToOrder.erase(order->price);
+            mBidPrices.erase(order->price);
+            delete order;
+        } else {
+            mBidOrderIdToOrder[clientOrderId]->volume = remainingVolume;
         }
-        else if (clientOrderId == mBidId)
-        {
-            mBidId = 0;
+    } else if (mAskOrderIdToOrder.count(clientOrderId) != 0) {
+        if (remainingVolume == 0) {
+            Order* order = mAskOrderIdToOrder[clientOrderId];
+            mAskOrderIdToOrder.erase(clientOrderId);
+            mAskToOrder.erase(order->price);
+            mAskPrices.erase(order->price);
+            delete order;
+        } else {
+            mAskOrderIdToOrder[clientOrderId]->volume = remainingVolume;
         }
-
-        mAsks.erase(clientOrderId);
-        mBids.erase(clientOrderId);
+    } else {
+        RLOG(LG_AT, LogLevel::LL_WARNING) << "unknown order " << clientOrderId << " had an update!";
     }
 }
 

@@ -22,11 +22,18 @@
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include <set>
 
 #include <boost/asio/io_context.hpp>
 
 #include <ready_trader_go/baseautotrader.h>
 #include <ready_trader_go/types.h>
+
+struct Order {
+    Order(unsigned long price, unsigned long volume, unsigned long orderId) : price(price), volume(volume), orderId(orderId) {}
+
+    unsigned long price, volume, orderId;
+};
 
 class AutoTrader : public ReadyTraderGo::BaseAutoTrader
 {
@@ -95,15 +102,19 @@ public:
 
 private:
     unsigned long mNextMessageId = 1;
+    //unsigned long mBidId = 0;
+    unsigned long mBidPrice = 0;
+    unsigned long mBidSize = 0;
     unsigned long mAskId = 0;
     unsigned long mAskPrice = 0;
     unsigned long mAskSize = 0;
-    unsigned long mBidId = 0;
-    unsigned long mBidPrice = 0;
-    unsigned long mBidSize = 0;
     signed long mPosition = 0;
-    std::unordered_set<unsigned long> mAsks;
-    std::unordered_set<unsigned long> mBids;
+    std::set<unsigned long> mBidPrices;
+    std::set<unsigned long> mAskPrices;
+    std::unordered_map<unsigned long, Order*> mBidToOrder;
+    std::unordered_map<unsigned long, Order*> mBidOrderIdToOrder;
+    std::unordered_map<unsigned long, Order*> mAskToOrder;
+    std::unordered_map<unsigned long, Order*> mAskOrderIdToOrder;
 };
 
 #endif //CPPREADY_TRADER_GO_AUTOTRADER_H
