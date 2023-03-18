@@ -141,7 +141,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
         // Adjust ask side
         if (askPrices[0] != 0) {
             // Calculate front of the book ask
-            unsigned int frontAsk = askPrices[0] + priceAdjustment - ADDITIONAL_SPREAD;
+            unsigned int frontAsk = askPrices[0] + priceAdjustment + ADDITIONAL_SPREAD;
             // Count to compute the maximum ask size
             // and also mark orders for cancellation that are too far away
             long maximumAskSize = POSITION_LIMIT + mPosition;
@@ -265,24 +265,28 @@ void AutoTrader::SendAmendOrder(unsigned long clientOrderId, unsigned long volum
 {
     BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
     mMessageTracker.NoteMessage();
+    RLOG(LG_AT, LogLevel::LL_WARNING) << " sent amend order message";
 }
 
 void AutoTrader::SendCancelOrder(unsigned long clientOrderId)
 {
     BaseAutoTrader::SendCancelOrder(clientOrderId);
     mMessageTracker.NoteMessage();
+    RLOG(LG_AT, LogLevel::LL_WARNING) << " sent cancel order message";
 }
 
 void AutoTrader::SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume)
 {
     BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
     mMessageTracker.NoteMessage();
+    RLOG(LG_AT, LogLevel::LL_WARNING) << " sent hedge order message";
 }
 
 void AutoTrader::SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan)
 {
     BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
     mMessageTracker.NoteMessage();
+    RLOG(LG_AT, LogLevel::LL_WARNING) << " sent insert order message";
 }
 
 void MessageFrequencyTracker::NoteMessage()
