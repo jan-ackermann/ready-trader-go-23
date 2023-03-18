@@ -25,6 +25,7 @@
 #include <set>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 #include <ready_trader_go/baseautotrader.h>
 #include <ready_trader_go/types.h>
@@ -33,6 +34,23 @@ struct Order {
     Order(unsigned long price, unsigned long volume, unsigned long orderId) : price(price), volume(volume), orderId(orderId) {}
 
     unsigned long price, volume, orderId;
+};
+
+constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
+constexpr int NUM_CLONES = 3;
+constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
+constexpr size_t MAX_MESSAGE_FREQ = 50;
+
+class MessageFrequencyTracker {
+    using arr_type = std::array<ptime, 16 * MAX_MESSAGE_FREQ>;
+    arr_type mMem;
+    arr_type::iterator mHead, mTail;
+    unsigned long mRollingMessageCount;
+    static constexpr time_duration PeriodLength = seconds(1);
+public:
+    MessageFrequencyTracker() : mRollingMessageCount(0), mMem{}, mHead(mMem.begin()), mTail(mMem.begin()) {}
+    void NoteMessage();
+    int GetNonCancelMessagesAllowed();
 };
 
 class AutoTrader : public ReadyTraderGo::BaseAutoTrader
@@ -100,6 +118,12 @@ public:
                                   const std::array<unsigned long, ReadyTraderGo::TOP_LEVEL_COUNT>& bidPrices,
                                   const std::array<unsigned long, ReadyTraderGo::TOP_LEVEL_COUNT>& bidVolumes) override;
 
+    // Overrides for message frequency tracking
+    void SendAmendOrder(unsigned long clientOrderId, unsigned long volume);
+    void SendCancelOrder(unsigned long clientOrderId);
+    void SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume);
+    void SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan);
+
 private:
     unsigned long mNextMessageId = 1;
     //unsigned long mBidId = 0;
@@ -115,6 +139,7 @@ private:
     std::unordered_map<unsigned long, Order*> mBidOrderIdToOrder;
     std::unordered_map<unsigned long, Order*> mAskToOrder;
     std::unordered_map<unsigned long, Order*> mAskOrderIdToOrder;
+    MessageFrequencyTracker mMessageTracker;
 };
 
 #endif //CPPREADY_TRADER_GO_AUTOTRADER_H

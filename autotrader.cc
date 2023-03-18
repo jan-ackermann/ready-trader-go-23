@@ -34,10 +34,6 @@ constexpr int TICK_SIZE_IN_CENTS = 100;
 constexpr int MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 constexpr int MAX_ASK_NEAREST_TICK = MAXIMUM_ASK / TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS;
 
-constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
-constexpr int NUM_CLONES = 3;
-constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
-
 constexpr Instrument FUT = Instrument::FUTURE;
 constexpr Instrument ETF = Instrument::ETF;
 constexpr double TAKER_FEE = 0.0002;
@@ -110,6 +106,8 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
             priceAdjustment = -((int)round(((double)mPosition + 50.0) / (2.5 * LOT_SIZE))) * TICK_SIZE_IN_CENTS;
         }
 
+        int numNewOrdersAllowed = mMessageTracker.GetNonCancelMessagesAllowed();
+
         // Adjust bid side
         if (bidPrices[0] != 0) {
             // Calculate front of the book bid
@@ -133,13 +131,14 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                     maximumBidSize -= (long)order->volume;
                 }
             }
-            for (unsigned int offset = 0; offset < NUM_CLONES && maximumBidSize > 0; offset++) {
+            for (unsigned int offset = 0; offset < NUM_CLONES && maximumBidSize > 0 && numNewOrdersAllowed > 0; offset++) {
                 unsigned int price = frontBid - offset * TICK_SIZE_IN_CENTS;
                 if (mBidPrices.count(price) == 0) {
                     unsigned int volume = std::min((long)LOT_SIZE, maximumBidSize);
                     unsigned int orderId = mNextMessageId++;
                     //RLOG(LG_AT, LogLevel::LL_INFO) << "putting in order at " << price << " with maximumBidSize " << maximumBidSize << " and id " << orderId;
                     SendInsertOrder(orderId, Side::BUY, price, volume, Lifespan::GOOD_FOR_DAY);
+                    numNewOrdersAllowed--;
                     auto* order = new Order(price, volume, orderId);
                     mBidPrices.emplace(price);
                     mBidToOrder[price] = order;
@@ -172,13 +171,14 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                     maximumAskSize -= (long)order->volume;
                 }
             }
-            for (unsigned int offset = 0; offset < NUM_CLONES && maximumAskSize > 0; offset++) {
+            for (unsigned int offset = 0; offset < NUM_CLONES && maximumAskSize > 0 && numNewOrdersAllowed > 0; offset++) {
                 unsigned int price = frontAsk + offset * TICK_SIZE_IN_CENTS;
                 if (mAskPrices.count(price) == 0) {
                     unsigned int volume = std::min((long)LOT_SIZE, maximumAskSize);
                     unsigned int orderId = mNextMessageId++;
                     //RLOG(LG_AT, LogLevel::LL_INFO) << "putting in order at " << price << " with maximumBidSize " << maximumBidSize << " and id " << orderId;
                     SendInsertOrder(orderId, Side::SELL, price, volume, Lifespan::GOOD_FOR_DAY);
+                    numNewOrdersAllowed--;
                     auto* order = new Order(price, volume, orderId);
                     mAskPrices.emplace(price);
                     mAskToOrder[price] = order;
@@ -269,4 +269,56 @@ void AutoTrader::TradeTicksMessageHandler(Instrument instrument,
                                    << "; ask volumes: " << askVolumes[0]
                                    << "; bid prices: " << bidPrices[0]
                                    << "; bid volumes: " << bidVolumes[0];
+}
+
+void AutoTrader::SendAmendOrder(unsigned long clientOrderId, unsigned long volume)
+{
+    BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
+    NoteMessage();
+}
+
+void AutoTrader::SendCancelOrder(unsigned long clientOrderId)
+{
+    BaseAutoTrader::SendCancelOrder(clientOrderId);
+    NoteMessage();
+}
+
+void AutoTrader::SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume)
+{
+    BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
+    NoteMessage();
+}
+
+void AutoTrader::SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan)
+{
+    BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
+    NoteMessage();
+}
+
+void MessageFrequencyTracker::NoteMessage()
+{
+    // Add new message and advance pointer
+    // For latency reasons, do not remove timed out messages
+    ptime currentTime = microsec_clock::universal_time();
+    *(mTail++) = currentTime;
+    mRollingMessageCount++;
+    if (mTail == mMem.end())
+        mTail = mMem.begin();
+}
+
+int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
+{
+    // Remove timed out messages
+    ptime currentTime = microsec_clock::universal_time();
+    while (mHead != mTail && currentTime - *mHead > MessageFrequencyTracker::PeriodLength) {
+        mRollingMessageCount--;
+        if (++mHead == mMem.end())
+            mHead = mMem.begin();
+    }
+    
+    // Figure out what message strategy is guranteed to be compliant
+    constexpr unsigned long safetyMargin = 5;
+    constexpr unsigned long maxOpenOrders = 2 * NUM_CLONES;
+    unsigned long freeMessages = MAX_MESSAGE_FREQ - mRollingMessageCount;
+    return std::max(0, (freeMessages - maxOpenOrders - safetyMargin) / 2);
 }
