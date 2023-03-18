@@ -263,51 +263,56 @@ void AutoTrader::TradeTicksMessageHandler(Instrument instrument,
 
 void AutoTrader::SendAmendOrder(unsigned long clientOrderId, unsigned long volume)
 {
-    BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
     mMessageTracker.NoteMessage();
+    BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
     RLOG(LG_AT, LogLevel::LL_WARNING) << " sent amend order message";
 }
 
 void AutoTrader::SendCancelOrder(unsigned long clientOrderId)
 {
-    BaseAutoTrader::SendCancelOrder(clientOrderId);
     mMessageTracker.NoteMessage();
+    BaseAutoTrader::SendCancelOrder(clientOrderId);
     RLOG(LG_AT, LogLevel::LL_WARNING) << " sent cancel order message";
 }
 
 void AutoTrader::SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume)
 {
-    BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
     mMessageTracker.NoteMessage();
+    BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
     RLOG(LG_AT, LogLevel::LL_WARNING) << " sent hedge order message";
 }
 
 void AutoTrader::SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan)
 {
-    BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
     mMessageTracker.NoteMessage();
+    BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
     RLOG(LG_AT, LogLevel::LL_WARNING) << " sent insert order message";
 }
 
 void MessageFrequencyTracker::NoteMessage()
 {
     // Add new message and advance pointer
-    // For latency reasons, do not remove timed out messages
     ptime currentTime = boost::posix_time::microsec_clock::universal_time();
     *(mTail++) = currentTime;
     mRollingMessageCount++;
     if (mTail == mMem.end())
         mTail = mMem.begin();
 
-    if (true) {
-        // Remove timed out messages
-        //ptime currentTime = boost::posix_time::microsec_clock::universal_time();
-        while (mHead != mTail && currentTime - *mHead > MessageFrequencyTracker::PeriodLength) {
-            mRollingMessageCount--;
-            if (++mHead == mMem.end())
-                mHead = mMem.begin();
-        }
-        RLOG(LG_AT, LogLevel::LL_WARNING) << " rolling message count " << mRollingMessageCount;
+    // Remove timed out messages
+    //ptime currentTime = boost::posix_time::microsec_clock::universal_time();
+    while (mHead != mTail && currentTime - *mHead > MessageFrequencyTracker::PeriodLength) {
+        mRollingMessageCount--;
+        if (++mHead == mMem.end())
+            mHead = mMem.begin();
+    }
+    RLOG(LG_AT, LogLevel::LL_WARNING) << " rolling message count " << mRollingMessageCount;
+
+    // Wait until submission is safe, this is a safety mechanism
+    // and should ideally never be used
+    if (mRollingMessageCount >= MAX_MESSAGE_FREQ) {
+        time_duration wait_for = currentTime - *mHead + boost::posix_time::milliseconds(100);
+        RLOG(LG_AT, LogLevel::LL_WARNING) << " before message submission waiting for " << wait_for;
+        boost::this_thread::sleep(wait_for);
     }
 }
 

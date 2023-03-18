@@ -25,6 +25,7 @@
 #include <set>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/thread/thread.hpp> 
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 #include <ready_trader_go/baseautotrader.h>
