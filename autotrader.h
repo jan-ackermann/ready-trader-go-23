@@ -49,7 +49,10 @@ class MessageFrequencyTracker {
     unsigned long mRollingMessageCount;
     static constexpr time_duration PeriodLength = seconds(1);
 public:
-    MessageFrequencyTracker() : mRollingMessageCount(0), mMem{}, mHead(mMem.begin()), mTail(mMem.begin()) {}
+    MessageFrequencyTracker() : mRollingMessageCount(0), mMem{} {
+        mHead = mMem.begin();
+        mTail = mMem.begin();
+    }
     void NoteMessage();
     int GetNonCancelMessagesAllowed();
 };
