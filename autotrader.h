@@ -38,6 +38,8 @@ struct Order {
     unsigned long price, volume, orderId;
 };
 
+RTG_INLINE_GLOBAL_LOGGER_WITH_CHANNEL(LG_AT, "AUTO")
+
 constexpr unsigned int LOT_SIZE = 10;
 constexpr int POSITION_LIMIT = 100;
 constexpr int TICK_SIZE_IN_CENTS = 100;
@@ -145,12 +147,6 @@ public:
 
 private:
     unsigned long mNextMessageId = 1;
-    //unsigned long mBidId = 0;
-    unsigned long mBidPrice = 0;
-    unsigned long mBidSize = 0;
-    unsigned long mAskId = 0;
-    unsigned long mAskPrice = 0;
-    unsigned long mAskSize = 0;
     signed long mPosition = 0;
     std::set<unsigned long> mBidPrices;
     std::set<unsigned long> mAskPrices;
