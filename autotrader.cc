@@ -16,12 +16,24 @@
 //     License along with Ready Trader Go.  If not, see
 //     <https://www.gnu.org/licenses/>.
 #include <array>
+#include <iostream>
 
 #include <boost/asio/io_context.hpp>
 
 #include <cmath>
 
 #include "autotrader.h"
+
+#define RELEASE
+
+#ifdef RELEASE
+#define IF_DBG if (false)
+#define IF_DBG_RLOG(loggerName,logLevel) IF_DBG std::cout
+#elif
+#define IF_DBG if (true)
+#define IF_DBG_RLOG(loggerName,logLevel) RLOG(loggerName,logLevel)
+#endif
+
 
 using namespace ReadyTraderGo;
 
@@ -34,13 +46,13 @@ AutoTrader::AutoTrader(boost::asio::io_context& context) : BaseAutoTrader(contex
 void AutoTrader::DisconnectHandler()
 {
     BaseAutoTrader::DisconnectHandler();
-    RLOG(LG_AT, LogLevel::LL_INFO) << "execution connection lost";
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "execution connection lost";
 }
 
 void AutoTrader::ErrorMessageHandler(unsigned long clientOrderId,
                                      const std::string& errorMessage)
 {
-    RLOG(LG_AT, LogLevel::LL_INFO) << "error with order " << clientOrderId << ": " << errorMessage;
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "error with order " << clientOrderId << ": " << errorMessage;
     if (clientOrderId != 0 && ((mAskOrderIdToOrder.count(clientOrderId) == 1) || (mBidOrderIdToOrder.count(clientOrderId) == 1)))
     {
         OrderStatusMessageHandler(clientOrderId, 0, 0, 0);
@@ -51,7 +63,7 @@ void AutoTrader::HedgeFilledMessageHandler(unsigned long clientOrderId,
                                            unsigned long price,
                                            unsigned long volume)
 {
-    RLOG(LG_AT, LogLevel::LL_INFO) << "hedge order " << clientOrderId << " filled for " << volume
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "hedge order " << clientOrderId << " filled for " << volume
                                    << " lots at $" << price << " average price in cents";
 }
 
@@ -64,20 +76,17 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
 {
     if (instrument == FUT) {
         unsigned long bestBidFut = bidPrices[0];
-        unsigned long bestBidVolFut = bidVolumes[0];
+        //unsigned long bestBidVolFut = bidVolumes[0];
         unsigned long bestAskFut = askPrices[0];
-        unsigned long bestAskVolFut = askVolumes[0];
+        //unsigned long bestAskVolFut = askVolumes[0];
 
         // Get out of bad orders right away
         // Cancel arbitragable bid orders
-        //std::array<unsigned long, 32> cancelled_orders {};
-        //unsigned int index = 0;
         for (unsigned long price : mBidPrices) {
             if (bestAskFut < price) {
                 unsigned int orderId = mBidToOrder[price]->orderId;
                 SendCancelOrder(orderId);
-                RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
-                //cancelled_orders[index++] = orderId;
+                IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
             }
         }
         // Cancel arbitragable ask orders
@@ -85,16 +94,14 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
             if (bestBidFut > price) {
                 unsigned int orderId = mAskToOrder[price]->orderId;
                 SendCancelOrder(orderId);
-                RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
-                //cancelled_orders[index++] = orderId;
+                IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "cancelling order " << orderId << " at price " << price;
             }
         }
 
         // Proper market making code
         // Minimum position imbalance before a price adjustment can be made
         constexpr long minPositionImbalance = 50;
-        // @1.0 = ; @0.5 = ; @0.25 = ; @0.0 =
-        constexpr double centsPerImbalancedShare = 1.0 / LOT_SIZE;
+        constexpr double centsPerImbalancedShare = 0.2 / LOT_SIZE;
         unsigned long priceAdjustment = 0;
         if (mPosition >= minPositionImbalance) {
             priceAdjustment = -(int)round(((double)mPosition - (double)minPositionImbalance) * centsPerImbalancedShare);
@@ -103,7 +110,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
         }
         priceAdjustment *= TICK_SIZE_IN_CENTS;
 
-        int numNewOrdersAllowed = mMessageTracker.GetNonCancelMessagesAllowed();
+        int numNewOrdersAllowed = mMessageTracker.GetNewOrdersAllowed();
 
         // Adjust bid side
         if (bestBidFut != 0) {
@@ -119,7 +126,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                 if (order == nullptr)
                     continue;
 
-                /*if (mBidToOrder.count(price) == 0) {
+                IF_DBG if (mBidToOrder.count(price) == 0) {
                     RLOG(LG_AT, LogLevel::LL_ERROR) << "mBidPrices and mBidToOrder is inconsistent for price " << price;
                     RLOG(LG_AT, LogLevel::LL_INFO) << "mBidPrices:";
                     for (auto& p : mBidPrices) RLOG(LG_AT, LogLevel::LL_INFO) << p;
@@ -129,7 +136,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                     for (auto& p : mBidOrderIdToOrder) RLOG(LG_AT, LogLevel::LL_INFO) << p.first << " maps to " << p.second;
                     RLOG(LG_AT, LogLevel::LL_INFO) << std::flush;
                     return;
-                }*/
+                }
 
                 if (price > frontBid || price <= frontBid - NUM_CLONES * TICK_SIZE_IN_CENTS) {
                     SendCancelOrder(order->orderId);
@@ -172,7 +179,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                 if (order == nullptr)
                     continue;
 
-                /*if (mAskToOrder.count(price) == 0) {
+                IF_DBG if (mAskToOrder.count(price) == 0) {
                     RLOG(LG_AT, LogLevel::LL_ERROR) << "mAskPrices and mAskToOrder is inconsistent for price " << price;
                     RLOG(LG_AT, LogLevel::LL_INFO) << "mAskPrices:";
                     for (auto& p : mAskPrices) RLOG(LG_AT, LogLevel::LL_INFO) << p;
@@ -182,7 +189,7 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
                     for (auto& p : mAskOrderIdToOrder) RLOG(LG_AT, LogLevel::LL_INFO) << p.first << " maps to " << p.second;
                     RLOG(LG_AT, LogLevel::LL_INFO) << std::flush;
                     return;
-                }*/
+                }
 
                 if (price < frontAsk || price >= frontAsk + NUM_CLONES * TICK_SIZE_IN_CENTS) {
                     SendCancelOrder(order->orderId);
@@ -212,15 +219,17 @@ void AutoTrader::OrderBookMessageHandler(Instrument instrument,
         }
     }
 
-    RLOG(LG_AT, LogLevel::LL_INFO) << "order book received for " << instrument << " instrument"
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "order book received for " << instrument << " instrument"
                                    << ": ask prices: " << askPrices[0]
                                    << "; ask volumes: " << askVolumes[0]
                                    << "; bid prices: " << bidPrices[0]
                                    << "; bid volumes: " << bidVolumes[0];
 
-    unsigned long bidQuote = mBidPrices.empty() ? 0 : *mBidPrices.crbegin();
-    unsigned long askQuote = mAskPrices.empty() ? 0 : *mAskPrices.cbegin();
-    RLOG(LG_AT, LogLevel::LL_INFO) << "making market for ETF " << bidQuote << ":" << askQuote;
+    IF_DBG {
+        unsigned long bidQuote = mBidPrices.empty() ? 0 : *mBidPrices.crbegin();
+        unsigned long askQuote = mAskPrices.empty() ? 0 : *mAskPrices.cbegin();
+        RLOG(LG_AT, LogLevel::LL_INFO) << "making market for ETF " << bidQuote << ":" << askQuote;
+    }
 }
 
 void AutoTrader::OrderFilledMessageHandler(unsigned long clientOrderId,
@@ -231,13 +240,13 @@ void AutoTrader::OrderFilledMessageHandler(unsigned long clientOrderId,
         SendHedgeOrder(mNextMessageId, Side::SELL, MIN_BID_NEAREST_TICK, volume);
         mNextMessageId++;
         mPosition += (long)volume;
-    } else { // if (mAsks.count(clientOrderId) != 0) {
+    } else {
         SendHedgeOrder(mNextMessageId, Side::BUY, MAX_ASK_NEAREST_TICK, volume);
         mNextMessageId++;
         mPosition -= (long)volume;
     }
 
-    RLOG(LG_AT, LogLevel::LL_INFO) << "order " << clientOrderId << " filled for " << volume
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "order " << clientOrderId << " filled for " << volume
                                    << " lots at $" << price << " cents";
 }
 
@@ -252,7 +261,7 @@ void AutoTrader::OrderStatusMessageHandler(unsigned long clientOrderId,
             mBidOrderIdToOrder.erase(clientOrderId);
             // Backstop in case mBidPrices, mBidToOrder, and mBidOrderIdToOrder become inconsistent
             if (order == nullptr) {
-                RLOG(LG_AT, LogLevel::LL_WARNING) << " found inconsistency within bid side order tracking datastructures";
+                IF_DBG_RLOG(LG_AT, LogLevel::LL_WARNING) << " found inconsistency within bid side order tracking datastructures";
                 return;
             }
             mBidToOrder.erase(order->price);
@@ -267,7 +276,7 @@ void AutoTrader::OrderStatusMessageHandler(unsigned long clientOrderId,
             mAskOrderIdToOrder.erase(clientOrderId);
             // Backstop in case mAskPrices, mAskToOrder, and mAskOrderIdToOrder become inconsistent
             if (order == nullptr) {
-                RLOG(LG_AT, LogLevel::LL_WARNING) << " found inconsistency within ask side order tracking datastructures";
+                IF_DBG_RLOG(LG_AT, LogLevel::LL_WARNING) << " found inconsistency within ask side order tracking datastructures";
                 return;
             }
             mAskToOrder.erase(order->price);
@@ -277,7 +286,7 @@ void AutoTrader::OrderStatusMessageHandler(unsigned long clientOrderId,
             mAskOrderIdToOrder[clientOrderId]->volume = remainingVolume;
         }
     } else {
-        RLOG(LG_AT, LogLevel::LL_WARNING) << "unknown order " << clientOrderId << " had an update!";
+        IF_DBG_RLOG(LG_AT, LogLevel::LL_WARNING) << "unknown order " << clientOrderId << " had an update!";
     }
 }
 
@@ -288,7 +297,7 @@ void AutoTrader::TradeTicksMessageHandler(Instrument instrument,
                                           const std::array<unsigned long, TOP_LEVEL_COUNT>& bidPrices,
                                           const std::array<unsigned long, TOP_LEVEL_COUNT>& bidVolumes)
 {
-    RLOG(LG_AT, LogLevel::LL_INFO) << "trade ticks received for " << instrument << " instrument"
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_INFO) << "trade ticks received for " << instrument << " instrument"
                                    << ": ask prices: " << askPrices[0]
                                    << "; ask volumes: " << askVolumes[0]
                                    << "; bid prices: " << bidPrices[0]
@@ -299,28 +308,28 @@ void AutoTrader::SendAmendOrder(unsigned long clientOrderId, unsigned long volum
 {
     mMessageTracker.NoteMessage();
     BaseAutoTrader::SendAmendOrder(clientOrderId, volume);
-    RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent amend order message";
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent amend order message";
 }
 
 void AutoTrader::SendCancelOrder(unsigned long clientOrderId)
 {
     mMessageTracker.NoteMessage();
     BaseAutoTrader::SendCancelOrder(clientOrderId);
-    RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent cancel order message";
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent cancel order message";
 }
 
 void AutoTrader::SendHedgeOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume)
 {
     mMessageTracker.NoteMessage();
     BaseAutoTrader::SendHedgeOrder(clientOrderId, side, price, volume);
-    RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent hedge order message";
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent hedge order message";
 }
 
 void AutoTrader::SendInsertOrder(unsigned long clientOrderId, Side side, unsigned long price, unsigned long volume, Lifespan lifespan)
 {
     mMessageTracker.NoteMessage();
     BaseAutoTrader::SendInsertOrder(clientOrderId, side, price, volume, lifespan);
-    RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent insert order message";
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_DEBUG) << " sent insert order message";
 }
 
 void MessageFrequencyTracker::NoteMessage()
@@ -338,18 +347,18 @@ void MessageFrequencyTracker::NoteMessage()
         if (++mHead == mMem.end())
             mHead = mMem.begin();
     }
-    RLOG(LG_AT, LogLevel::LL_WARNING) << " rolling message count " << mRollingMessageCount;
+    IF_DBG_RLOG(LG_AT, LogLevel::LL_WARNING) << " rolling message count " << mRollingMessageCount;
 
     // Wait until submission is safe, this is a safety mechanism
     // and should ideally never be used
     if (mRollingMessageCount > MAX_MESSAGE_FREQ) {
         time_duration wait_for = currentTime - *mHead + boost::posix_time::milliseconds(100);
-        RLOG(LG_AT, LogLevel::LL_WARNING) << " before message submission waiting for " << wait_for;
+        IF_DBG_RLOG(LG_AT, LogLevel::LL_WARNING) << " before message submission waiting for " << wait_for;
         boost::this_thread::sleep(wait_for);
     }
 }
 
-int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
+int MessageFrequencyTracker::GetNewOrdersAllowed()
 {
     // Remove timed out messages
     ptime currentTime = boost::posix_time::microsec_clock::universal_time();
@@ -365,9 +374,3 @@ int MessageFrequencyTracker::GetNonCancelMessagesAllowed()
     unsigned long freeMessages = MAX_MESSAGE_FREQ - mRollingMessageCount;
     return (int)std::max(0UL, (freeMessages - maxOpenOrders - safetyMargin) / 2);
 }
-// python rtg.py run autotrader
-// ./compile.sh
-// git pull; ./compile.sh; python rtg.py run autotrader
-
-// Todo - fix own book crossing orders
-//      - check what happens if input to HandleOrderBookUpdate is corrupt, no bid or no ask or whatever

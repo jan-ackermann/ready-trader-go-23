@@ -51,7 +51,6 @@ constexpr ReadyTraderGo::Instrument ETF = ReadyTraderGo::Instrument::ETF;
 constexpr double TAKER_FEE = 0.0002;
 constexpr double MAKER_FEE = -0.0001;
 
-constexpr int MIN_VALID_FUT_ORDER_VOLUME = 100;
 constexpr int NUM_CLONES = 5;
 constexpr unsigned long ADDITIONAL_SPREAD = 1 * TICK_SIZE_IN_CENTS;
 constexpr size_t MAX_MESSAGE_FREQ = 50;
@@ -71,7 +70,7 @@ public:
         mTail = mMem.begin();
     }
     void NoteMessage();
-    int GetNonCancelMessagesAllowed();
+    int GetNewOrdersAllowed();
 };
 
 class AutoTrader : public ReadyTraderGo::BaseAutoTrader
